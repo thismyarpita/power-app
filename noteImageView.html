@@ -1,0 +1,478 @@
+<html>
+    <head>
+        <title>Note Images</title>
+        <style>
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 20px 0;
+                font-size: 18px;
+                text-align: left;
+            }
+            th, td {
+                padding: 10px;
+                border: 1px solid #ddd;
+            }
+            th {
+                background-color: #f4f4f4;
+            }
+            tfoot {
+                background-color: #f4f4f4;
+            }
+            #uploadSection {
+                margin: 20px 0;
+            }
+           
+
+
+#uploadButton {
+    display: inline-block;
+    padding: 10px 20px;
+    background-color: #0078D4;
+    color: white;
+    font-size: 16px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.3s ease;
+    margin-left: 10px;
+}
+
+#uploadButton:hover {
+    background-color: #0078D4;
+}
+#fileList {
+    margin-top: 10px;
+    font-size: 14px;
+    color: #333;
+}
+
+        </style>
+        <script type="text/javascript">
+        	
+            document.addEventListener("DOMContentLoaded", async function () {
+                if (typeof parent.Xrm === "undefined") {
+                    console.error("Xrm API is not available.");
+                    return;
+                }
+
+                let innerFormContext = parent.Xrm.Page; // Deprecated, replace with parent.Xrm
+                let innerRowId = innerFormContext.data.entity.getId().replace(/[{ }]/g, "");
+                let tableContainer = document.getElementById("tableContainer");
+                tableContainer.innerHTML = "Loading data...";
+
+                try {
+                    let topResult = await parent.Xrm.WebApi.retrieveMultipleRecords("dylt_changenotesimages",
+                        `?$filter=_dylt_changenote_value eq '${innerRowId}' &$select=dylt_screenfile,dylt_filedata,dylt_filename,dylt_changenotesimagesid`
+                    );
+
+                    if (topResult.entities.length === 0) {
+                        tableContainer.innerHTML = "No images available.";
+                        return;
+                    }
+
+                    let tableHTML = "<table border='1' width='100%'><tr><th>Attachments</th></tr>";
+
+                    for (let image of topResult.entities) {
+                        let imageName = "N/A";
+                        let fileId = image.dylt_changenotesimagesid;
+
+                        if (image.dylt_filedata == null && image.dylt_filename) {
+                            imageName = image.dylt_filename;
+                        } else if (image.dylt_filedata) {
+                            try {
+                                let currentUrl = window.location.origin;
+                                let fileDataUrl = `${currentUrl}/api/data/v9.0/dylt_changenotesimageses(${fileId})/dylt_filedata_name/`;
+
+                                let response = await fetch(fileDataUrl, {
+                                    method: 'GET',
+                                    headers: { "Content-Type": "application/json" }
+                                });
+
+                                if (response.ok) {
+                                    let datafile = await response.json();
+                                    imageName = datafile.value;
+                                } else {
+                                    console.error(`Failed to fetch file data: ${response.statusText}`);
+                                }
+                            } catch (error) {
+                                console.error("Fetch error:", error);
+                            }
+                        }
+
+                        tableHTML += `<tr>
+                            <td><a href="#" class="arrow-link" onclick="openImage('${fileId}')">${imageName}</a></td>
+                        </tr>`;
+                    }
+
+                    tableHTML += "</table>";
+                    tableContainer.innerHTML = tableHTML;
+                } catch (error) {
+                    console.error("Error fetching data for row " + innerRowId + ":", error);
+                    tableContainer.innerHTML = "Failed to load data.";
+                }
+            });
+
+            
+            async function openImage(fileId) {
+        try {
+                // Retrieve records from dylt_changenotesimages where lookup matches fileId
+                let openResult = await parent.Xrm.WebApi.retrieveMultipleRecords("dylt_changenotesimages",
+            `?$filter=dylt_changenotesimagesid eq '${fileId}' &$select=dylt_screenfile,dylt_filedata,dylt_changenotesimagesid`
+            );
+
+            // Process records and fetch file data if needed
+            let fileUrls = await Promise.all(openResult.entities.map(async (item) => {
+                // If dylt_screenfile exists (base64 image)
+                if (item.dylt_screenfile) {
+                    return item.dylt_screenfile; // Assuming base64 is PNG format
+                }
+            // If dylt_filedata exists (file attachment)
+            else if (item.dylt_filedata) {
+                    const currentUrl = window.location.origin;  // Get the base URL
+            let fileDataUrl = `${currentUrl}/api/data/v9.0/dylt_changenotesimageses(${item.dylt_changenotesimagesid})/dylt_filedata/`;
+
+            try {
+                let response = await fetch(fileDataUrl, {
+                method: 'GET',
+            headers: {"Content-Type": "application/json" }
+                        });
+
+            if (!response.ok) {
+                console.error(`Failed to fetch file data: ${response.statusText}`);
+            return null;
+                        }
+
+            let datafile = await response.json();
+            if (datafile.value.startsWith("JVBERi0")) {
+	                        return datafile.value;
+	                    }else{
+	                    return "data:image/*;base64," + datafile.value;
+	                    }
+                    } catch (error) {
+                console.error('Fetch error:', error);
+            return null;
+                    }
+                }
+            return null; // Skip if both values are null/empty
+            }));
+
+            // Filter out any null values
+            fileUrls = fileUrls.filter(Boolean);
+
+            // Open the gallery popup if there are images or attachments
+            if (fileUrls.length > 0) {
+                innerOpenImageGalleryPopup(fileUrls);
+            } else {
+                parent.Xrm.Navigation.openAlertDialog({
+                    text: "No images or attachments found for this record.",
+                    title: "No Attachments",
+                    confirmButtonLabel: "OK"
+                });
+            }
+        } catch (error) {
+                console.error("Error fetching data for file ID " + fileId + ":", error.message);
+        }
+    }
+            // Function to open a JavaScript popup window and show images or attachments with navigation arrows
+            function innerOpenImageGalleryPopup(fileUrls) {
+            if (fileUrls.length === 0) {
+                parent.Xrm.Navigation.openAlertDialog({
+                    text: "No images or files available.",
+                    title: "No Files",
+                    confirmButtonLabel: "OK"
+                });
+            return;
+    }
+
+            var width = 800;
+            var height = 600;
+            var left = (window.screen.width - width) / 2;
+            var top = (window.screen.height - height) / 2;
+
+            var innerGalleryWindow = window.open("", "_blank", `width=${width},height=${height},top=${top},left=${left},resizable=yes,scrollbars=yes`);
+
+            if (!innerGalleryWindow) {
+                parent.Xrm.Navigation.openAlertDialog({
+                    text: "Popup blocked! Please allow popups in your browser.",
+                    title: "Popup Blocked",
+                    confirmButtonLabel: "OK"
+                });
+            return;
+    }
+
+            var currentIndex = 0;
+
+            function innerGenerateGalleryContent() {
+        var fileContent = "";
+
+            if (fileUrls[currentIndex].startsWith("data:image")) {
+                fileContent = `<img id="galleryImage" src="${fileUrls[currentIndex]}" alt="Image">`;
+        } else if (fileUrls[currentIndex].startsWith("JVBERi0") || fileUrls[currentIndex].endsWith(".pdf")) {
+                fileContent = `
+                <iframe id="pdfViewer" src="data:application/pdf;base64,${fileUrls[currentIndex]}" 
+                    width="100%" height="100%" style="border: none;"></iframe>
+            `;
+        } else {
+                fileContent = `<a href="${fileUrls[currentIndex]}" target="_blank">Click to view file</a>`;
+        }
+
+            return `<html>
+        <head>
+            <title>File Gallery</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    margin: 0;
+                    padding: 0;
+                    background-color: #f8f9fa;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                }
+                .gallery-container {
+                    width: 100%;
+                    height: 100%;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    position: relative;
+                }
+.gallery {
+    width: 90%; /* 90% of the gallery-container */
+    height: 90vh; /* Adjust height as needed */
+display: flex;
+    justify-content: center; /* Center content horizontally */
+    align-items: center; /* Center content vertically */
+    overflow: hidden; /* Prevents content from overflowing */
+}
+                .gallery img {
+                    max-width: 100%;
+                    max-height: 100%;
+                    border-radius: 5px;
+                    box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+                }
+                .arrow {
+                    position: absolute;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    font-size: 2em;
+                    color: #007bff;
+                    background: rgba(255, 255, 255, 0.5);
+                    border: none;
+                    cursor: pointer;
+                    padding: 10px;
+                    z-index: 10;
+                }
+                .arrow.left { left: 10px; }
+                .arrow.right { right: 10px; }
+                .arrow:hover { background-color: rgba(255, 255, 255, 0.8); }
+            </style>
+        </head>
+        <body>
+            <div class="gallery-container">
+                <div class="gallery">${fileContent}
+                </div>
+            </div>
+            </body>
+        </html>
+        `;
+    }
+
+            innerGalleryWindow.document.write(innerGenerateGalleryContent());
+            innerGalleryWindow.document.close();
+}
+
+async function uploadFile() {
+                let fileInput = document.getElementById("fileInput");
+            let files = fileInput.files;
+
+            const uploadStatusDiv = document.getElementById("uploadStatus");
+            uploadStatusDiv.innerHTML = "Uploading...";
+
+            if (!files) {
+                alert("Please select a file to upload.");
+            return;
+                }
+
+            if (typeof parent.Xrm === "undefined") {
+                alert("Xrm API is not available.");
+            return;
+                }
+// Allowed file types
+    const allowedTypes = [
+        "image/bmp", "image/gif", "image/jpeg", "image/jpg",
+        "image/png", "image/tiff", "image/x-tiff", "application/pdf"
+    ];
+                for (const file of files) {
+if (!allowedTypes.includes(file.type)) {
+continue;
+        }
+			        try {
+			            // Step 1: Create a record in Dataverse
+			            const docName=file.name;
+            const recordId = await createDataverseRecord(docName);
+
+            // Step 2: Upload the file and associate it with the record
+
+            await uploadFileToRecord(recordId, file);
+
+            // Update status
+            
+			        } catch (error) {
+                uploadStatusDiv.innerHTML += `<p>Error uploading ${file.name}: ${error.message}</p>`;
+			        }
+			    }
+
+			    uploadStatusDiv.innerHTML += `<p>Success</p>`;
+            location.reload();
+
+        }
+
+
+// Function to create a Dataverse record
+            async function createDataverseRecord(docName) {
+  
+  /************************************************************************ */
+  var innerFormContext = parent.Xrm.Page; // Deprecated, replace with parent.Xrm
+            var innerRowId = innerFormContext.data.entity.getId().replace(/[{ }]/g, "");
+
+            var currentUrl = window.location.origin;
+            var apiUrl = `${currentUrl}/api/data/v9.0/dylt_changenotesimageses`;
+
+
+
+          
+            var record = {};
+record["dylt_ChangeNote@odata.bind"] = `/dylt_changenoteses(${innerRowId})`; // Lookup
+record.dylt_filename = docName;
+
+
+            try {
+        const response = await fetch(apiUrl, {
+                method: "POST",
+            headers: {
+                "OData-MaxVersion": "4.0",
+            "OData-Version": "4.0",
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json"
+            },
+            body: JSON.stringify(record),
+        });
+
+            if (!response.ok) {
+            const errorText = await response.text(); // Capture response details for debugging
+            throw new Error(`Error creating Dataverse record! Status: ${response.status}, Details: ${errorText}`);
+        }
+
+            // Extract the 'OData-EntityId' header to get the record's unique identifier
+            const entityIdHeader = response.headers.get("OData-EntityId");
+            if (!entityIdHeader) {
+            throw new Error("OData-EntityId header is missing in the response!");
+        }
+
+            // Parse the unique ID from the header (last part of the URL)
+            const recordId = entityIdHeader.split('(').pop().split(')')[0];
+            console.log("Record created successfully with ID:", recordId);
+
+
+            // Define field update
+            var noteicondata = {
+                "dylt_noteicon": "📂" // Replace with your actual column and value
+            };
+
+            var noteapiUrl = `${currentUrl}/api/data/v9.2/dylt_changenoteses(${innerRowId})`;
+
+            fetch(noteapiUrl, {
+                method: "PATCH",
+                headers: {
+                    "OData-MaxVersion": "4.0",
+                    "OData-Version": "4.0",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Prefer": "return=representation"
+                },
+                body: JSON.stringify(noteicondata)
+            })
+            .then(response => {
+                if (response.ok) {
+                    console.log("Change Note updated successfully.");
+                    return response.json();
+                } else {
+                    throw new Error("Update failed with status: " + response.status);
+                }
+            })
+            .then(result => {
+                console.log("Returned result:", result);
+            })
+            .catch(error => {
+                console.error("Error:", error.message);
+            });
+
+
+
+            return recordId; // Return the unique record ID
+    } catch (error) {
+                console.error("Error in createDataverseRecord:", error.message);
+            throw error;
+    }
+}
+
+
+            // Function to upload a file and associate it with a Dataverse record
+            async function uploadFileToRecord(recordId, file) {
+
+ 
+var currentUrl = window.location.origin;
+            var apiUrl = `${currentUrl}/api/data/v9.0/dylt_changenotesimageses(${recordId})/dylt_filedata`;
+
+
+
+            try {
+        const response = await fetch(apiUrl, {
+                method: "PATCH",
+            headers: {
+                "Content-Type": "application/octet-stream",
+            "x-ms-file-name": file.name
+          },
+            body: file
+            
+        });
+
+            if (!response.ok) {
+            const errorDetails = await response.text();
+            throw new Error(`Error uploading file! Status: ${response.status}, Details: ${errorDetails}`);
+        }
+
+            console.log(`File uploaded successfully: ${file.name}`);
+    } catch (error) {
+                console.error("Error in uploadFileToRecord:", error.message);
+            throw error;
+    }
+}
+document.getElementById("fileInput").addEventListener("change", function() {
+    const fileList = document.getElementById("fileList");
+    fileList.innerHTML = ""; // Clear previous list
+    if (this.files.length > 0) {
+        for (let i = 0; i < this.files.length; i++) {
+            let fileItem = document.createElement("p");
+            fileItem.textContent = this.files[i].name;
+            fileList.appendChild(fileItem);
+        }
+    } else {
+        fileList.innerHTML = "<p>No file chosen</p>";
+    }
+});
+        </script>
+    </head>
+    <body>
+        <div id="uploadSection">
+    <input type="file" id="fileInput" multiple accept="image/bmp, image/gif, image/jpeg, image/jpg, image/png, image/tiff, image/x-tiff, application/pdf">
+   
+    <button id="uploadButton" onclick="uploadFile()">Upload</button>
+</div>
+<div id="uploadStatus"></div>
+        <div id="tableContainer"></div>
+    </body>
+</html>
