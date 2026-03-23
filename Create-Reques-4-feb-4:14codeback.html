@@ -1,0 +1,161 @@
+With(
+   {
+       wthCompletedStatus: LookUp(
+           colChangeRequestStatus_choices,// Initialized at HomeScreen:OnVisible
+           'Type of Status' = "Completed"
+       ).'Request Status'
+   },
+   With(
+       {
+           wthExistingOpenRequestsForProBill: LookUp(
+               'Change Requests',
+               'API Record'.'Pro Number' = fldProNumber_home.Text && 'Change Request Status'.'Request Status' <> wthCompletedStatus
+           )
+       },
+       With(
+           {wthGetProBillShipmentDetailsResponse: 'Get-Probill-Shipment-Details'.Run(fldProNumber_home.Text)},// [Note: Flow retrieves Probill Shipment Details from Daylight Shipping API and creates API Record in dataverse]
+           If(
+               // The with-context generated api record id is blank [Note: If the response from the Daylight Shipping API is blank/invalid, a record will not be created and an ID will not be returned.]
+               IsBlank(wthGetProBillShipmentDetailsResponse.api_record_id),
+               Notify(// Then there's been an error, show an error notification and don't run the rest of the logic
+                   $"We ran into an issue retrieving this probill. {wthGetProBillShipmentDetailsResponse.response_message}",
+                   NotificationType.Error,
+                   2000
+               );
+               Reset(fldProNumber_home),
+               !IsBlank(wthExistingOpenRequestsForProBill),
+               Notify(// Then we won't allow them to create a new change request
+                   $"An existing change request for this ProBill is currently active. Request ID: {wthExistingOpenRequestsForProBill.'Change Request No.'}, Created by: {wthExistingOpenRequestsForProBill.'Created By'.'Full Name'}",
+                   NotificationType.Error
+               );
+               Reset(fldProNumber_home),
+               With(// Else the api record was created, so we can proceed to run the subsequent logic
+                   {wthGetProBillShipmentDetailsResponseId: GUID(wthGetProBillShipmentDetailsResponse.api_record_id)},
+                   With(
+                       {
+                           wthAPIRecord: LookUp(
+                               'API Records',
+                               'API Record Id' = wthGetProBillShipmentDetailsResponseId
+                           )
+                       },
+                       UpdateContext({ctxAPIRecordID: wthAPIRecord.'API Record Id'});
+                       If(// [TODO: Check if status is correct] Freight status is past point of BCR eligibility
+                           wthAPIRecord.'Freight Status' in [
+                               "ENTRY",
+                               "AVAIL"
+                           ],
+                           Notify(
+                               $"This ProBill has not been docked yet. Current freight status: {wthAPIRecord.'Freight Status'}",
+                               NotificationType.Error
+                           ),
+                           wthAPIRecord.'Freight Status' in [
+                               "DELVD",
+                               "COMPLETE"
+                           ],
+                           Notify(
+                               $"This ProBill has been delivered and is not qualified for BCR. Current freight status: {wthAPIRecord.'Freight Status'}",
+                               NotificationType.Error
+                           ),
+                           With(// Else the api record is valid for a BCR, so we can proceed to run the subsequent logic
+                           {wthChangeType: If(wthAPIRecord.'Freight Status' = "BILLD", "BAR", "BCR")},
+                           With(
+                               {
+                                   wthChangeRequest: Patch(
+                                       'Change Requests',
+                                       {
+                                           'Change Request Id': GUID(),
+                                           'API Record': wthAPIRecord,
+                                           'Change Request Status': LookUp(
+                                               colChangeRequestStatus_choices,// Initialized at HomeScreen:OnVisible
+                                               'Type of Status' = "Draft"
+
+
+                                           ),
+                                           'Change Request Type': LookUp('Type of Changes', 'Type of Change' = wthChangeType)
+                                       }
+                                   )
+                               },
+                               With(
+                                   {wthChangeRequestId: wthChangeRequest.'Change Request Id'},
+                                   With(
+                                       {
+                                           wthAdditionalServices: Filter(
+                                               'API Accessorials',
+                                               //ThisRecord.'API Record'.'API Record Id' = wthAPIRecord.'API Record Id' //[DEVNOTE: Ignoring delegation warning as this table is very small.]
+                                               ThisRecord.'API Record'.'API Record Id' = ctxAPIRecordID //  [Follow up: delegation caused issue with the next update]
+                                              
+                                           )
+                                       },
+                                       UpdateIf(// Update collection to mark any additional services associated to this API Record as selected [This collection is used as the Items of galAdditionalServices]
+                                           colCurrentAdditionalServices,// Initialized/Reset at HomeScreen:OnVisible
+                                           ThisRecord.Value in wthAdditionalServices.'Friendly Name',
+                                           {IsChecked: true}
+                                       );
+      
+                                       ClearCollect(// Duplicate current additional services to updated addtional services [This collection is the one modified in galAdditionalServices]
+                                           colUpdatedAdditionalServices,// Initialized/Reset at HomeScreen:OnVisible
+                                           colCurrentAdditionalServices
+                                       );
+                                       Navigate(
+                                           'Request Screen',
+                                           ScreenTransition.None,
+                                           {
+                                               ctxRequestType: "New",
+                                               ctxDisplayMode: DisplayMode.Edit,
+                                               ctxChangeRequest: LookUp(
+                                                   'Change Requests',
+                                                   'Change Request Id' = wthChangeRequestId
+                                               ),
+                                               ctxSelectedItem: {
+                                                   proNumber: wthAPIRecord.'Pro Number',
+                                                   freightStatus: wthAPIRecord.'Freight Status',
+                                                   pallets: wthAPIRecord.Pallets,
+                                                   pieces: wthAPIRecord.Pieces,
+                                                   weight: wthAPIRecord.Weight,
+                                                   consignee: {
+                                                       ConsigneeName: wthAPIRecord.'Consignee Name',
+                                                       ConsigneeAddress1: wthAPIRecord.'Consignee Address 1',
+                                                       ConsigneeAddress2: wthAPIRecord.'Consignee Address 2',
+                                                       ConsigneeCity: wthAPIRecord.'Consignee City',
+                                                       ConsigneeState: wthAPIRecord.'Consignee State',
+                                                       ConsigneeZip: wthAPIRecord.'Consignee Zip',
+                                                       ConsigneeContactName: Blank(),
+                                                       ConsigneeContactNumber: Blank()
+                                                   },
+                                                   willCall: Blank(),
+                                                   WillCallContactName: Blank(),
+                                                   WillCallContactNumber: Blank(),
+                                                   //[Phase2] "Service Center One",
+                                       // Will Call Not currently in API
+returnToShipper: false,
+                                                   changeInTerms: false,
+                                                   upgrades: false,
+                                                   other: false,
+                                                   //[Phase2] true,
+                                       // Return To Shipper Not currently in API
+shipper: {
+                                                       ShipperName: wthAPIRecord.'Shipper Name',
+                                                       ShipperAddress1: wthAPIRecord.'Shipper Address 1',
+                                                       ShipperAddress2: wthAPIRecord.'Shipper Address 2',
+                                                       ShipperCity: wthAPIRecord.'Shipper City',
+                                                       ShipperState: wthAPIRecord.'Shipper State',
+                                                       ShipperZip: wthAPIRecord.'Shipper Zip'
+                                                   }
+                                               },
+                                               ctxRelatedNotes: Filter(
+                                                   'Change Notes',
+                                                   'Change Request'.'Change Request Id' = wthChangeRequestId
+                                               )
+                                           }
+                                       )
+                                   )
+                               )
+                           )
+                           )
+                       )
+                   )
+               )
+           )
+       )
+   )
+);
