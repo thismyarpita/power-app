@@ -1,0 +1,284 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Note Images</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      font-size: 16px;
+    }
+    th, td {
+      padding: 10px;
+      border: 1px solid #ccc;
+    }
+    th {
+      background-color: #f4f4f4;
+    }
+    #uploadSection {
+      margin: 20px 0;
+    }
+    #uploadButton {
+      padding: 10px 20px;
+      background-color: #0078D4;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    #uploadButton:hover {
+      background-color: #005ea2;
+    }
+    #scrrenshoteditor {
+      border: 1px solid #ccc;
+      padding: 10px;
+      min-height: 150px;
+      margin-top: 10px;
+    }
+    .file-name {
+      color: blue;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+
+<div id="uploadSection">
+  <input type="file" id="fileInput" multiple accept="image/*,application/pdf">
+  <div id="scrrenshoteditor" contenteditable="true">Paste or drop images here...</div>
+  <button id="uploadButton">Upload</button>
+</div>
+
+<div id="uploadStatus"></div>
+<div id="tableContainer">Loading attachments...</div>
+
+<script>
+let savedImages = [];
+
+document.addEventListener("DOMContentLoaded", function () {
+  const editor = document.getElementById("scrrenshoteditor");
+
+  // Paste and drop handlers for screenshots
+  editor.addEventListener("paste", async (e) => {
+    const items = e.clipboardData.items;
+    for (let item of items) {
+      if (item.type.indexOf("image") !== -1) {
+        const file = item.getAsFile();
+        insertImage(file);
+        e.preventDefault();
+      }
+    }
+  });
+
+  editor.addEventListener("dragover", (e) => e.preventDefault());
+  editor.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const files = e.dataTransfer.files;
+    for (let file of files) {
+      if (file.type.startsWith("image/")) {
+        insertImage(file);
+      }
+    }
+  });
+
+  function insertImage(file) {
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      const img = document.createElement("img");
+      img.src = e.target.result;
+      img.style.maxWidth = "100%";
+      savedImages.push(e.target.result);
+      editor.appendChild(img);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.getElementById("uploadButton").addEventListener("click", uploadAllFiles);
+  loadExistingAttachments();
+});
+
+async function uploadAllFiles() {
+  const fileInput = document.getElementById("fileInput");
+  const files = fileInput.files;
+  const uploadStatusDiv = document.getElementById("uploadStatus");
+  uploadStatusDiv.innerHTML = "Uploading...";
+
+  if (typeof parent.Xrm === "undefined") {
+    alert("Xrm API is not available.");
+    return;
+  }
+
+  const currentUrl = window.location.origin;
+  let innerFormContext = parent.Xrm.Page;
+  let innerRowId = innerFormContext.data.entity.getId().replace(/[{ }]/g, "");
+
+  try {
+    // Upload files
+    for (const file of files) {
+      const recordId = await createDataverseRecord(file.name, null, innerRowId);
+      await uploadFileToRecord(recordId, file);
+    }
+
+    // Upload screenshots
+    for (let i = 0; i < savedImages.length; i++) {
+      const base64Img = savedImages[i];
+      await createDataverseRecord(`Screenshot ${i + 1}`, base64Img, innerRowId);
+    }
+
+    uploadStatusDiv.innerHTML = "Upload successful!";
+    location.reload();
+
+  } catch (error) {
+    uploadStatusDiv.innerHTML = `Error: ${error.message}`;
+    console.error(error);
+  }
+}
+
+async function createDataverseRecord(filename, base64Image, rowId) {
+  const apiUrl = `${window.location.origin}/api/data/v9.0/pr_fileattachmentses`;
+  const record = {
+    "pr_RequestLookup@odata.bind": `/pr_multiplefiles(${rowId})`,
+    "pr_filename": filename
+  };
+  if (base64Image) record.pr_multilinetext = base64Image;
+
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "OData-MaxVersion": "4.0",
+      "OData-Version": "4.0",
+      "Content-Type": "application/json; charset=utf-8",
+      "Accept": "application/json"
+    },
+    body: JSON.stringify(record)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Dataverse create error: ${errorText}`);
+  }
+
+  const entityIdHeader = response.headers.get("OData-EntityId");
+  return entityIdHeader.split('(').pop().split(')')[0];
+}
+
+async function uploadFileToRecord(recordId, file) {
+  const apiUrl = `${window.location.origin}/api/data/v9.0/pr_fileattachmentses(${recordId})/pr_file`;
+
+  const response = await fetch(apiUrl, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "x-ms-file-name": file.name
+    },
+    body: file
+  });
+
+  if (!response.ok) {
+    const errorDetails = await response.text();
+    throw new Error(`File upload failed: ${errorDetails}`);
+  }
+}
+
+async function loadExistingAttachments() {
+  const tableContainer = document.getElementById("tableContainer");
+
+  if (typeof parent.Xrm === "undefined") {
+    tableContainer.innerHTML = "Xrm API not available.";
+    return;
+  }
+
+  const formContext = parent.Xrm.Page;
+  const rowId = formContext.data.entity.getId().replace(/[{ }]/g, "");
+
+  try {
+    const response = await parent.Xrm.WebApi.retrieveMultipleRecords("pr_fileattachments", `?$filter=_pr_requestlookup_value eq '${rowId}'&$select=pr_filename,pr_fileattachmentsid,pr_multilinetext`);
+    if (response.entities.length === 0) {
+      tableContainer.innerHTML = "No attachments found.";
+      return;
+    }
+
+    let html = `<table><thead><tr><th>Filename</th></tr></thead><tbody>`;
+    for (let item of response.entities) {
+      html += `<tr><td><span class="file-name" onclick="previewAttachment('${item.pr_fileattachmentsid}')">${item.pr_filename}</span></td></tr>`;
+    }
+    html += `</tbody></table>`;
+    tableContainer.innerHTML = html;
+
+  } catch (error) {
+    console.error("Load error:", error.message);
+    tableContainer.innerHTML = "Error loading attachments.";
+  }
+}
+
+async function previewAttachment(fileId) {
+  try {
+    const response = await parent.Xrm.WebApi.retrieveRecord("pr_fileattachments", fileId, "?$select=pr_multilinetext");
+    let fileUrl = null;
+
+    if (response.pr_multilinetext) {
+      fileUrl = response.pr_multilinetext;
+    } else {
+      const fetchUrl = `${window.location.origin}/api/data/v9.0/pr_fileattachmentses(${fileId})/pr_file/`;
+      const fetchRes = await fetch(fetchUrl, {
+        method: 'GET',
+        headers: { "Content-Type": "application/json" }
+      });
+
+      if (fetchRes.ok) {
+        const result = await fetchRes.json();
+        if (result.value.startsWith("JVBERi0")) {
+          fileUrl = "data:application/pdf;base64," + result.value;
+        } else {
+          fileUrl = "data:image/*;base64," + result.value;
+        }
+      } else {
+        throw new Error("Could not retrieve binary data.");
+      }
+    }
+
+    openGallery([fileUrl]);
+  } catch (err) {
+    console.error("Preview failed:", err.message);
+  }
+}
+
+function openGallery(urls) {
+  const width = 800;
+  const height = 600;
+  const left = (window.screen.width / 2) - (width / 2);
+  const top = (window.screen.height / 2) - (height / 2);
+   const popup = window.open("", "_blank", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+
+  if (!popup) {
+    alert("Popup blocked. Please enable popups.");
+    return;
+  }
+
+  const content = `
+    <html><head><title>Preview</title>
+    <style>
+      body { margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; background: #eee; }
+      img, iframe { max-width: 90%; max-height: 90%; }
+    </style>
+    </head>
+    <body>
+      ${urls[0].includes("pdf") ? 
+        `<iframe src="${urls[0]}" width="100%" height="100%"></iframe>` :
+        `<img src="${urls[0]}" alt="Preview">`
+      }
+    </body></html>`;
+
+  popup.document.write(content);
+  popup.document.close();
+}
+</script>
+
+</body>
+</html>
